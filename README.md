@@ -119,11 +119,15 @@ SPA-VAEGAN/
 
 ---
 
-## Execution Guide
+## 🚀 Execution Guide
 
 ### 1. Google Colab Workflow (GPU Recommended)
-Upload the notebooks located in `notebooks/` to Google Colab and run them sequentially:
-1. `notebooks/01_colab_setup_and_data.ipynb`: Mounts Drive, installs packages, downloads DIV2K, generates patch banks, and runs the overfit test.
+**Option A: Unified Master Pipeline (Recommended):**
+Open [`notebooks/SPA_VAEGAN_Complete_Pipeline.ipynb`](notebooks/SPA_VAEGAN_Complete_Pipeline.ipynb) in Google Colab. It consolidates all 4 phases into one single notebook with automatic Google Drive persistence and auto-resumption if sessions disconnect!
+
+**Option B: Modular Phase Notebooks:**
+Alternatively, run the individual phase notebooks in sequence:
+1. `notebooks/01_colab_setup_and_data.ipynb`: Environment check, DIV2K download/unzip, patch bank generation, overfit test.
 2. `notebooks/02_train_baseline_cvae.ipynb`: Trains Baseline CVAE for 30,000 iterations and saves `baseline_it10000.pt`.
 3. `notebooks/03_train_spa_vaegan.ipynb`: Warm-starts from `baseline_it10000.pt` and trains SPA-VAEGAN for 20,000 adversarial steps.
 4. `notebooks/04_evaluate_and_figures.ipynb`: Executes the 2,000-patch benchmark, computes bootstrap CIs, plots figures, and exports stripped weights.
