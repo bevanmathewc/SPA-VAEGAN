@@ -1,0 +1,62 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# PyTorch checkpoints and models
+# Ignore full training checkpoints (they are multi-hundred MB and saved to Drive)
+*.pth
+*.pt
+# Whitelist lightweight exported generator checkpoints (~7MB each)
+!checkpoints/cvae_baseline_G.pt
+!checkpoints/spa_vaegan_G.pt
+
+# Datasets and Patches (keep on Drive or /content, do not commit GBs of raw data)
+dataset/raw/
+dataset/patches/
+data/
+DIV2K_train_HR/
+DIV2K_valid_HR/
+*.zip
+*.tar
+*.tar.gz
+*.npy
+
+# Temporary files and scratch logs
+extracted_plan.txt
+*.log
+.DS_Store
+Thumbs.db

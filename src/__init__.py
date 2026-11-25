@@ -1,0 +1,1 @@
+"""SPA-VAEGAN source package."""

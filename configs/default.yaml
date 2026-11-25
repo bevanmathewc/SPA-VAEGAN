@@ -1,0 +1,78 @@
+# SPA-VAEGAN Configuration File
+# Contains all paths and fixed hyperparameters for dataset preparation,
+# baseline CVAE training, SPA-VAEGAN training, evaluation, and application.
+
+seed: 42
+
+dataset:
+  div2k_train_dir: "/content/data/DIV2K_train_HR"
+  div2k_valid_dir: "/content/data/DIV2K_valid_HR"
+  splits_dir: "dataset/splits"
+  patches_dir: "/content/patches"
+  drive_patches_dir: "/content/drive/MyDrive/SPA-VAEGAN/patches"
+  scale: 4
+  hr_patch_size: 256
+  stored_patch_size: 288
+  lr_patch_size: 64
+  train_patches_per_image: 30
+  val_patches_per_image: 5
+  test_patches_per_image: 20
+  sigma: 1.0
+  k: 7
+  num_workers: 2
+  pin_memory: true
+
+model:
+  zc: 4
+  c: 64
+  n_blocks: 16
+  res_scale: 0.1
+
+baseline:
+  batch_size: 16
+  total_iterations: 30000
+  milestone_iteration: 10000
+  lr: 0.0001
+  betas: [0.9, 0.999]
+  beta_kl: 0.001
+  kl_warmup_steps: 2000
+  val_interval: 1000
+  log_interval: 100
+  save_interval: 500
+  amp: true
+  checkpoint_dir: "/content/drive/MyDrive/SPA-VAEGAN/checkpoints/baseline"
+  local_checkpoint_dir: "checkpoints/baseline"
+
+spa_vaegan:
+  batch_size: 16
+  total_iterations: 20000
+  warmstart_checkpoint: "/content/drive/MyDrive/SPA-VAEGAN/checkpoints/baseline/baseline_it10000.pt"
+  lr_G: 0.0001
+  betas_G: [0.9, 0.999]
+  lr_D: 0.0001
+  betas_D: [0.5, 0.999]
+  beta_kl: 0.001
+  lambda_edge: 0.5
+  delta: 0.1
+  lambda_max: 1000.0
+  eps_adv: 1.0e-8
+  val_interval: 1000
+  log_interval: 100
+  save_interval: 500
+  amp: true
+  checkpoint_dir: "/content/drive/MyDrive/SPA-VAEGAN/checkpoints/spa_vaegan"
+  local_checkpoint_dir: "checkpoints/spa_vaegan"
+
+evaluation:
+  test_patches: 2000
+  batch_size: 16
+  device: "cuda"
+  bootstrap_resamples: 1000
+  results_dir: "results"
+
+app:
+  default_model: "spa_vaegan"
+  tile_size: 64
+  halo: 24
+  max_dim_gpu: 1024
+  max_dim_cpu: 512
