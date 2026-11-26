@@ -59,7 +59,7 @@ spa_vaegan:
   val_interval: 1000
   log_interval: 100
   save_interval: 500
-  amp: true
+  amp: false
   checkpoint_dir: "/content/drive/MyDrive/SPA-VAEGAN/checkpoints/spa_vaegan"
   local_checkpoint_dir: "checkpoints/spa_vaegan"
 
