@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import lpips
 
 from models.cvae import CVAE
 from models.discriminator import PatchDiscriminator
@@ -27,35 +28,77 @@ from src.checkpointing import save_checkpoint, load_checkpoint, CheckpointSelect
 from src.logging_utils import TrainingMonitor
 
 
-def validate_spa(G: torch.nn.Module, val_loader: DataLoader, device: torch.device, max_samples: int = 400):
-    """Computes validation PSNR and L1 loss under prior mode (z = 0)."""
+
+def validate_spa(
+    G: torch.nn.Module,
+    val_loader: DataLoader,
+    device: torch.device,
+    lpips_model: torch.nn.Module,
+    max_samples: int = 400
+):
+    """Computes validation PSNR, L1 and LPIPS under prior mode (z = 0)."""
+
     G.eval()
+    lpips_model.eval()
+
     total_l1 = 0.0
     total_mse = 0.0
+    total_lpips = 0.0
     count = 0
 
     with torch.no_grad():
         for batch in val_loader:
+
             hr = batch.to(device, non_blocking=True).float() / 255.0
             lr = degrade(hr)
-            # Prior mode inference: z = 0
-            sr, _, _ = G(lr)
-            sr_quant = (sr.clamp(0.0, 1.0) * 255.0).round() / 255.0
 
-            mse = F.mse_loss(sr_quant, hr, reduction="none").flatten(1).mean(1)
-            l1 = F.l1_loss(sr_quant, hr, reduction="none").flatten(1).mean(1)
+            sr, _, _ = G(lr)
+
+            sr_clamped = sr.float().clamp(0.0, 1.0)
+            sr_quant = (sr_clamped * 255.0).round() / 255.0
+
+            mse = F.mse_loss(
+                sr_quant, hr, reduction="none"
+            ).flatten(1).mean(1)
+
+            l1 = F.l1_loss(
+                sr_quant, hr, reduction="none"
+            ).flatten(1).mean(1)
+
+            # LPIPS expects RGB images in [-1, 1].
+            lpips_value = lpips_model(
+                sr_clamped * 2.0 - 1.0,
+                hr * 2.0 - 1.0
+            ).flatten(1).mean(1)
 
             total_mse += mse.sum().item()
             total_l1 += l1.sum().item()
+            total_lpips += lpips_value.sum().item()
+
             count += hr.shape[0]
+
             if count >= max_samples:
                 break
 
     mean_mse = total_mse / count
     mean_l1 = total_l1 / count
-    psnr = min(100.0, 10.0 * torch.log10(torch.tensor(1.0 / max(mean_mse, 1e-10))).item())
+    mean_lpips = total_lpips / count
+
+    psnr = min(
+        100.0,
+        10.0 * torch.log10(
+            torch.tensor(1.0 / max(mean_mse, 1e-10))
+        ).item()
+    )
+
     G.train()
-    return {"val_l1": mean_l1, "val_psnr": psnr}
+
+    return {
+        "val_l1": mean_l1,
+        "val_psnr": psnr,
+        "val_lpips": mean_lpips
+    }
+
 
 
 def train_spa_vaegan(config_path: str = "configs/default.yaml", patches_dir: str = None):
@@ -102,6 +145,11 @@ def train_spa_vaegan(config_path: str = "configs/default.yaml", patches_dir: str
     scalerD = torch.cuda.amp.GradScaler(enabled=(s_cfg["amp"] and device.type == "cuda"))
 
     sobel = SobelEdge().to(device)
+    lpips_model = lpips.LPIPS(net="alex").to(device).eval()
+
+for p in lpips_model.parameters():
+    p.requires_grad_(False)
+
     weight_tracker = AdaptiveWeightTracker(
         delta=s_cfg["delta"],
         lambda_max=s_cfg["lambda_max"],
@@ -142,7 +190,7 @@ def train_spa_vaegan(config_path: str = "configs/default.yaml", patches_dir: str
     fieldnames = [
         "iteration", "step_time", "L_pix", "L_edge", "L_adv", "L_D",
         "D_real", "D_fake", "lambda_t", "raw_lambda", "norm_rec", "norm_adv",
-        "val_l1", "val_psnr"
+        "val_l1", "val_psnr","val_lpips"
     ]
     monitor = TrainingMonitor(log_file, fieldnames)
     selector = CheckpointSelector(psnr_margin=1.5)
@@ -242,7 +290,7 @@ def train_spa_vaegan(config_path: str = "configs/default.yaml", patches_dir: str
 
         # Validation
         if val_loader is not None and (it % s_cfg["val_interval"] == 0 or it == total_iters):
-            val_results = validate_spa(G, val_loader, device)
+            val_results = validate_spa(G, val_loader, device, lpips_model)
             metrics.update(val_results)
             monitor.log_step(it, metrics, print_console=True)
 

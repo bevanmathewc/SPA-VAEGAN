@@ -62,6 +62,7 @@ def save_checkpoint(
     atomic_save(payload, filepath)
 
 
+
 def load_checkpoint(
     filepath: str,
     G: torch.nn.Module,
@@ -72,37 +73,69 @@ def load_checkpoint(
     scalerD: Optional[torch.cuda.amp.GradScaler] = None,
     device: str = "cuda"
 ) -> Dict[str, Any]:
-    """Loads checkpoint and restores parameters and states."""
+
     if not os.path.exists(filepath):
-        raise FileNotFoundError(f"Checkpoint not found at: {filepath}")
-        
-    checkpoint = torch.load(filepath, map_location=device)
+        raise FileNotFoundError(
+            f"Checkpoint not found at: {filepath}"
+        )
+
+    # These are trusted project checkpoints.
+    checkpoint = torch.load(
+        filepath,
+        map_location=device,
+        weights_only=False
+    )
+
     G.load_state_dict(checkpoint["G_state_dict"])
-    
+
     if optG is not None and checkpoint.get("optG_state_dict") is not None:
         optG.load_state_dict(checkpoint["optG_state_dict"])
+
     if scalerG is not None and checkpoint.get("scalerG_state_dict") is not None:
         scalerG.load_state_dict(checkpoint["scalerG_state_dict"])
-        
+
     if D is not None and checkpoint.get("D_state_dict") is not None:
         D.load_state_dict(checkpoint["D_state_dict"])
+
     if optD is not None and checkpoint.get("optD_state_dict") is not None:
         optD.load_state_dict(checkpoint["optD_state_dict"])
+
     if scalerD is not None and checkpoint.get("scalerD_state_dict") is not None:
         scalerD.load_state_dict(checkpoint["scalerD_state_dict"])
-        
+
     rng_states = checkpoint.get("rng_states")
+
     if rng_states is not None:
-        if "torch" in rng_states and rng_states["torch"] is not None:
-            torch.set_rng_state(rng_states["torch"])
-        if "cuda" in rng_states and rng_states["cuda"] is not None and torch.cuda.is_available():
-            torch.cuda.set_rng_state(rng_states["cuda"])
-        if "numpy" in rng_states and rng_states["numpy"] is not None:
+
+        if rng_states.get("torch") is not None:
+            torch.set_rng_state(
+                torch.as_tensor(
+                    rng_states["torch"],
+                    dtype=torch.uint8,
+                    device="cpu"
+                )
+            )
+
+        if (
+            rng_states.get("cuda") is not None
+            and torch.cuda.is_available()
+        ):
+            torch.cuda.set_rng_state(
+                torch.as_tensor(
+                    rng_states["cuda"],
+                    dtype=torch.uint8,
+                    device="cpu"
+                )
+            )
+
+        if rng_states.get("numpy") is not None:
             np.random.set_state(rng_states["numpy"])
-        if "random" in rng_states and rng_states["random"] is not None:
+
+        if rng_states.get("random") is not None:
             random.setstate(rng_states["random"])
-            
+
     return checkpoint
+
 
 
 class CheckpointSelector:
