@@ -1,10 +1,16 @@
+
 """
 Gradient-based Adaptive Adversarial Weight for SPA-VAEGAN.
-Dynamically scales the adversarial loss gradient to be delta * ||grad_rec|| at the generator's final layer.
-Prevents GAN collapse, stabilizes joint optimization, and prevents mode hallucination.
+
+Computes the ratio of reconstruction and adversarial gradient norms
+at the generator's final decoder layer.
+
+Gradient norms are calculated WITHOUT GradScaler scaling.
+GradScaler remains responsible for the actual training backward pass.
 """
 
 from typing import Optional, Tuple
+import math
 import torch
 
 
@@ -16,33 +22,51 @@ def raw_adaptive_weight(
     delta: float = 0.1,
     eps: float = 1e-8
 ) -> Optional[torch.Tensor]:
-    """
-    Computes delta * ||grad(L_rec)||_2 / (||grad(L_adv)||_2 + eps) evaluated at ref_weight (G.dec.last.weight).
-    Scale factor `s` from GradScaler is included to prevent fp16 gradient underflow,
-    and cancels cleanly in the ratio.
-    """
-    s = scaler.get_scale() if (scaler is not None and scaler.is_enabled()) else 1.0
-    
-    # Compute gradients with respect to the generator's final conv layer
-    g_rec = torch.autograd.grad(l_rec * s, ref_weight, retain_graph=True)[0]
-    g_adv = torch.autograd.grad(l_adv * s, ref_weight, retain_graph=True)[0]
-    
-    n_rec = g_rec.float().norm()
-    n_adv = g_adv.float().norm()
-    
-    # Return None if gradient norms are non-finite (e.g. overflow/underflow during fp16 scaling)
-    if not (torch.isfinite(n_rec) and torch.isfinite(n_adv)):
+
+    # Calculate unscaled gradients for adaptive-weight estimation.
+    g_rec = torch.autograd.grad(
+        l_rec,
+        ref_weight,
+        retain_graph=True
+    )[0]
+
+    g_adv = torch.autograd.grad(
+        l_adv,
+        ref_weight,
+        retain_graph=True
+    )[0]
+
+    # Use float64 for stable norm calculation.
+    n_rec = torch.linalg.vector_norm(g_rec.detach().to(torch.float64))
+    n_adv = torch.linalg.vector_norm(g_adv.detach().to(torch.float64))
+
+    if not torch.isfinite(n_rec) or not torch.isfinite(n_adv):
         return None
-        
-    return (delta * n_rec / (n_adv + eps)).detach()
+
+    weight = delta * n_rec / (n_adv + eps)
+
+    if not torch.isfinite(weight):
+        return None
+
+    return weight.detach().to(dtype=torch.float32)
 
 
 class AdaptiveWeightTracker:
     """
-    Tracks and updates the adaptive adversarial weight lambda_t using exponential moving average (EMA).
-    lambda_t = clip(0.9 * lambda_{t-1} + 0.1 * lambda_raw, 0, lambda_max)
+    Tracks the adaptive adversarial weight using an exponential
+    moving average:
+
+    lambda_t = 0.9 * lambda_(t-1) + 0.1 * lambda_raw
+
+    The result is clipped to [0, lambda_max].
     """
-    def __init__(self, delta: float = 0.1, lambda_max: float = 1000.0, eps: float = 1e-8):
+
+    def __init__(
+        self,
+        delta: float = 0.1,
+        lambda_max: float = 1000.0,
+        eps: float = 1e-8
+    ):
         self.delta = delta
         self.lambda_max = lambda_max
         self.eps = eps
@@ -55,24 +79,58 @@ class AdaptiveWeightTracker:
         ref_weight: torch.nn.Parameter,
         scaler: Optional[torch.cuda.amp.GradScaler] = None
     ) -> Tuple[float, Optional[float], float, float]:
-        """
-        Updates the tracker state.
-        Returns:
-            (lambda_to_use, raw_lambda, norm_rec, norm_adv)
-        """
-        s = scaler.get_scale() if (scaler is not None and scaler.is_enabled()) else 1.0
-        g_rec = torch.autograd.grad(l_rec * s, ref_weight, retain_graph=True)[0]
-        g_adv = torch.autograd.grad(l_adv * s, ref_weight, retain_graph=True)[0]
-        n_rec = g_rec.float().norm().item()
-        n_adv = g_adv.float().norm().item()
-        
+
+        # Calculate gradients WITHOUT GradScaler multiplication.
+        g_rec = torch.autograd.grad(
+            l_rec,
+            ref_weight,
+            retain_graph=True
+        )[0]
+
+        g_adv = torch.autograd.grad(
+            l_adv,
+            ref_weight,
+            retain_graph=True
+        )[0]
+
+        # Convert to float64 before calculating norms.
+        n_rec_tensor = torch.linalg.vector_norm(
+            g_rec.detach().to(torch.float64)
+        )
+
+        n_adv_tensor = torch.linalg.vector_norm(
+            g_adv.detach().to(torch.float64)
+        )
+
+        n_rec = n_rec_tensor.item()
+        n_adv = n_adv_tensor.item()
+
         raw_val = None
-        if torch.isfinite(torch.tensor(n_rec)) and torch.isfinite(torch.tensor(n_adv)):
+
+        # Update only when both gradient norms are finite.
+        if (
+            math.isfinite(n_rec)
+            and math.isfinite(n_adv)
+            and n_rec >= 0
+            and n_adv >= 0
+        ):
+
             raw_val = self.delta * n_rec / (n_adv + self.eps)
-            if self.lam is None:
-                self.lam = raw_val
-            else:
-                self.lam = 0.9 * self.lam + 0.1 * raw_val
-                
-        lam_use = 0.0 if self.lam is None else min(max(self.lam, 0.0), self.lambda_max)
+
+            # Prevent an excessively large raw weight from
+            # destabilising the EMA.
+            raw_val = min(raw_val, self.lambda_max)
+
+            if math.isfinite(raw_val):
+                if self.lam is None:
+                    self.lam = raw_val
+                else:
+                    self.lam = 0.9 * self.lam + 0.1 * raw_val
+
+        # Keep the final adaptive weight within configured bounds.
+        if self.lam is None or not math.isfinite(self.lam):
+            lam_use = 0.0
+        else:
+            lam_use = min(max(self.lam, 0.0), self.lambda_max)
+
         return lam_use, raw_val, n_rec, n_adv
