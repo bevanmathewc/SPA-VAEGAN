@@ -145,8 +145,14 @@ def train_spa_vaegan(config_path: str = "configs/default.yaml", patches_dir: str
     scalerD = torch.cuda.amp.GradScaler(enabled=(s_cfg["amp"] and device.type == "cuda"))
 
     sobel = SobelEdge().to(device)
-    lpips_model = lpips.LPIPS(net="alex").to(device).eval()
 
+# Initialise LPIPS validation model
+import lpips
+
+lpips_model = lpips.LPIPS(net="alex").to(device)
+lpips_model.eval()
+
+# LPIPS is used only for validation, not training
 for p in lpips_model.parameters():
     p.requires_grad_(False)
 
