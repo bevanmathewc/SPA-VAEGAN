@@ -23,6 +23,8 @@ from src.adaptive_weight import raw_adaptive_weight, AdaptiveWeightTracker
 
 class TestSPAVAEGAN(unittest.TestCase):
     def setUp(self):
+        torch.manual_seed(42)
+        np.random.seed(42)
         self.device = torch.device("cpu")
         self.G = CVAE(zc=4, c=64, n_blocks=16).to(self.device)
         self.D = PatchDiscriminator(in_channels=6).to(self.device)

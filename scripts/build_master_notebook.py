@@ -205,14 +205,19 @@ for zip_name, url in DIV2K_URLS.items():
     cells.append(nbf.v4.new_code_cell(data_code))
 
     cells.append(nbf.v4.new_markdown_cell("""### **Build & Persist Patch Banks to Google Drive**"""))
-    patch_code = '''LOCAL_PATCHES = "/content/patches" if IS_COLAB else "dataset/patches"
+    patch_code = '''import os
+import shutil
+
+LOCAL_PATCHES = "/content/patches" if IS_COLAB else "dataset/patches"
 DRIVE_PATCHES = "/content/drive/MyDrive/SPA-VAEGAN/patches" if IS_COLAB else "dataset/patches"
 
 os.makedirs(LOCAL_PATCHES, exist_ok=True)
 os.makedirs(DRIVE_PATCHES, exist_ok=True)
 
-# Check if patches already exist in Drive
+# Check if patches already exist in Drive or locally
 drive_has_all = all(os.path.exists(os.path.join(DRIVE_PATCHES, f)) 
+                    for f in ["train_patches.npy", "val_patches.npy", "test_patches.npy"])
+local_has_all = all(os.path.exists(os.path.join(LOCAL_PATCHES, f)) 
                     for f in ["train_patches.npy", "val_patches.npy", "test_patches.npy"])
 
 if drive_has_all:
@@ -220,20 +225,30 @@ if drive_has_all:
     for f in ["train_patches.npy", "val_patches.npy", "test_patches.npy"]:
         src_f = os.path.join(DRIVE_PATCHES, f)
         dst_f = os.path.join(LOCAL_PATCHES, f)
-        if not os.path.exists(dst_f):
+        if not os.path.exists(dst_f) and os.path.abspath(src_f) != os.path.abspath(dst_f):
             print(f"[↻] Copying {f}...")
             shutil.copy2(src_f, dst_f)
     print("[✓] Patch banks successfully loaded onto local disk.")
+elif local_has_all:
+    print("[✓] All patch banks already exist on local disk! Syncing to Google Drive...")
+    for f in ["train_patches.npy", "val_patches.npy", "test_patches.npy"]:
+        src_f = os.path.join(LOCAL_PATCHES, f)
+        dst_f = os.path.join(DRIVE_PATCHES, f)
+        if not os.path.exists(dst_f) and os.path.abspath(src_f) != os.path.abspath(dst_f):
+            print(f"[↻] Persisting {f} to Google Drive...")
+            shutil.copy2(src_f, dst_f)
+    print("[✓] Patch banks successfully persisted to Google Drive.")
 else:
     print("Building patch banks from scratch and persisting to Google Drive...")
     !python -m src.make_patches --config configs/default.yaml --patches_dir {LOCAL_PATCHES} --drive_patches_dir {DRIVE_PATCHES}
 
-print("\\n--- Verified Patch Banks on Google Drive ---")
+print("\\n--- Verified Patch Banks ---")
+target_dir = DRIVE_PATCHES if os.path.exists(os.path.join(DRIVE_PATCHES, "train_patches.npy")) else LOCAL_PATCHES
 for fname in ["train_patches.npy", "val_patches.npy", "test_patches.npy"]:
-    p = os.path.join(DRIVE_PATCHES, fname)
+    p = os.path.join(target_dir, fname)
     if os.path.exists(p):
         mb = os.path.getsize(p) / (1024 * 1024)
-        print(f"[✓ Drive] {fname:20s}: {mb:8.1f} MB (Persisted)")
+        print(f"[✓] {fname:20s}: {mb:8.1f} MB (Verified in {target_dir})")
     else:
         print(f"[!] Missing: {fname}")
 '''
@@ -344,10 +359,8 @@ plt.show()
 
 drop_ratio = (losses[0] - losses[-1]) / losses[0] * 100
 print(f"Start Loss: {losses[0]:.4f} -> Final Loss: {losses[-1]:.4f} (Dropped by {drop_ratio:.1f}%)")
-if losses[-1] < losses[0] * 0.5:
-    print("[✓] Overfit test passed successfully! Network optimizes smoothly.")
-else:
-    print("[!] Warning: Loss dropped slower than expected, but gradient flow is active.")
+assert losses[-1] < losses[0] * 0.5, f"Overfit test failed: Loss dropped only {drop_ratio:.1f}% (expected > 50%)"
+print("[✓] Overfit test passed successfully! Network optimizes smoothly.")
 '''
     cells.append(nbf.v4.new_code_cell(overfit_code))
 

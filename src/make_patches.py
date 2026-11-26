@@ -10,7 +10,8 @@ Saved as memory-mapped .npy files (uint8, shape (N, 3, H, W)) for ultra-fast GPU
 import argparse
 import os
 import random
-from typing import List, Tuple
+import shutil
+from typing import List, Optional, Tuple
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
@@ -129,31 +130,90 @@ def build_patch_bank(
     print(f"Successfully created patch bank: {out_path} ({total_patches} patches).")
 
 
+def resolve_image_dir(explicit_dir: Optional[str], default_dir: str, fallbacks: List[str]) -> str:
+    """Finds an existing image directory from explicit arg, default config, or common fallback paths."""
+    if explicit_dir and os.path.exists(explicit_dir):
+        return explicit_dir
+    if os.path.exists(default_dir):
+        return default_dir
+    for fb in fallbacks:
+        if os.path.exists(fb):
+            return fb
+    return explicit_dir or default_dir
+
+
 def main():
     parser = argparse.ArgumentParser(description="Create patch banks from DIV2K")
-    parser.add_argument("--config", type=str, default="configs/default.yaml")
-    parser.add_argument("--patches_dir", type=str, default=None)
+    parser.add_argument("--config", type=str, default="configs/default.yaml", help="Path to config file")
+    parser.add_argument("--patches_dir", type=str, default=None, help="Local directory to output patch banks")
+    parser.add_argument("--drive_patches_dir", type=str, default=None, help="Optional persistent Drive directory to mirror patches")
+    parser.add_argument("--train_dir", type=str, default=None, help="Directory containing DIV2K train HR images")
+    parser.add_argument("--valid_dir", type=str, default=None, help="Directory containing DIV2K validation HR images")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     d_cfg = cfg["dataset"]
     patches_dir = args.patches_dir or d_cfg.get("patches_dir", "dataset/patches")
+    drive_patches_dir = args.drive_patches_dir or d_cfg.get("drive_patches_dir")
+    os.makedirs(patches_dir, exist_ok=True)
+
+    # Locate splits directory
+    splits_dir = d_cfg.get("splits_dir", "dataset/splits")
+    if not os.path.exists(splits_dir):
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        splits_dir = os.path.join(repo_root, "dataset", "splits")
 
     # Load split text files
-    with open(os.path.join(d_cfg["splits_dir"], "train.txt"), "r") as f:
+    with open(os.path.join(splits_dir, "train.txt"), "r") as f:
         train_names = [line.strip() for line in f if line.strip()]
-    with open(os.path.join(d_cfg["splits_dir"], "val.txt"), "r") as f:
+    with open(os.path.join(splits_dir, "val.txt"), "r") as f:
         val_names = [line.strip() for line in f if line.strip()]
-    with open(os.path.join(d_cfg["splits_dir"], "test.txt"), "r") as f:
+    with open(os.path.join(splits_dir, "test.txt"), "r") as f:
         test_names = [line.strip() for line in f if line.strip()]
 
     print(f"Loaded splits: {len(train_names)} train, {len(val_names)} val, {len(test_names)} test.")
+
+    # Resolve train and valid image directories
+    train_dir = resolve_image_dir(
+        args.train_dir,
+        d_cfg.get("div2k_train_dir", "/content/data/DIV2K_train_HR"),
+        [
+            "/content/drive/MyDrive/SPA-VAEGAN/data/DIV2K_train_HR",
+            "data/DIV2K_train_HR",
+            "dataset/DIV2K_train_HR",
+            "DIV2K_train_HR"
+        ]
+    )
+    valid_dir = resolve_image_dir(
+        args.valid_dir,
+        d_cfg.get("div2k_valid_dir", "/content/data/DIV2K_valid_HR"),
+        [
+            "/content/drive/MyDrive/SPA-VAEGAN/data/DIV2K_valid_HR",
+            "data/DIV2K_valid_HR",
+            "dataset/DIV2K_valid_HR",
+            "DIV2K_valid_HR"
+        ]
+    )
+
+    if not os.path.exists(train_dir):
+        raise FileNotFoundError(
+            f"DIV2K training images directory not found at '{train_dir}'. "
+            f"Ensure the dataset is downloaded/extracted or pass --train_dir."
+        )
+    if not os.path.exists(valid_dir):
+        raise FileNotFoundError(
+            f"DIV2K validation images directory not found at '{valid_dir}'. "
+            f"Ensure the dataset is downloaded/extracted or pass --valid_dir."
+        )
+
+    print(f"Using train images from: {train_dir}")
+    print(f"Using validation images from: {valid_dir}")
 
     # Build Train Patches
     train_out = os.path.join(patches_dir, "train_patches.npy")
     build_patch_bank(
         image_names=train_names,
-        img_dir=d_cfg["div2k_train_dir"],
+        img_dir=train_dir,
         out_path=train_out,
         patch_size=d_cfg["stored_patch_size"],  # 288
         patches_per_img=d_cfg["train_patches_per_image"],  # 30
@@ -165,7 +225,7 @@ def main():
     val_out = os.path.join(patches_dir, "val_patches.npy")
     build_patch_bank(
         image_names=val_names,
-        img_dir=d_cfg["div2k_train_dir"],
+        img_dir=train_dir,
         out_path=val_out,
         patch_size=d_cfg["hr_patch_size"],  # 256
         patches_per_img=d_cfg["val_patches_per_image"],  # 5
@@ -177,13 +237,29 @@ def main():
     test_out = os.path.join(patches_dir, "test_patches.npy")
     build_patch_bank(
         image_names=test_names,
-        img_dir=d_cfg["div2k_valid_dir"],
+        img_dir=valid_dir,
         out_path=test_out,
         patch_size=d_cfg["hr_patch_size"],  # 256
         patches_per_img=d_cfg["test_patches_per_image"],  # 20
         is_train=False,
         seed=cfg["seed"] + 200
     )
+
+    # Persist / mirror to drive_patches_dir if requested and not identical path
+    if drive_patches_dir:
+        abs_local = os.path.abspath(patches_dir)
+        abs_drive = os.path.abspath(drive_patches_dir)
+        if abs_local != abs_drive:
+            os.makedirs(drive_patches_dir, exist_ok=True)
+            print(f"\n[Drive Sync] Mirroring patch banks to Google Drive ({drive_patches_dir})...")
+            for fname in ["train_patches.npy", "val_patches.npy", "test_patches.npy"]:
+                src_f = os.path.join(patches_dir, fname)
+                dst_f = os.path.join(drive_patches_dir, fname)
+                if os.path.exists(src_f):
+                    print(f"[↻] Mirroring {fname} to Drive...")
+                    shutil.copy2(src_f, dst_f)
+                    mb = os.path.getsize(dst_f) / (1024 * 1024)
+                    print(f"[✓ Drive] {fname:20s}: {mb:8.1f} MB (Persisted)")
 
 
 if __name__ == "__main__":
